@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrustRec</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>TrustRec</h1>
+  <p>Trust-aware recommendations for courses, books and videos</p>
+</header>
+
+<main>
+  <form id="search-form">
+    <input id="q" type="text" placeholder="What do you want to learn? e.g. machine learning, SQL, RAG" autofocus required>
+    <select id="kind" aria-label="Resource type">
+      <option value="">All types</option>
+      <option value="course">Courses</option>
+      <option value="book">Books</option>
+      <option value="video">Videos</option>
+    </select>
+    <button type="submit">Search</button>
+  </form>
+
+  <p id="status" role="status"></p>
+  <section id="results"></section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
