@@ -1,36 +1,33 @@
-"""Retrieval + trust-aware re-ranking.
+"""Retrieval + trust-aware re-ranking using the ChromaDB vector store.
 
-Stage 1 (retrieve): cosine similarity between the query embedding and each
-    resource embedding (sentence-transformers), so matching is by meaning,
-    not just shared words.
-Stage 2 (re-rank):  final = ALPHA * relevance + (1 - ALPHA) * trust.
-
-Explanations are currently template-based and grounded in the retrieved data
-(rating components, flagged reviews). They will be replaced by LLM-generated
-RAG explanations in a later phase.
+relevance = 1 - cosine distance; final = ALPHA * relevance + (1 - ALPHA) * trust.
+Explanations are still template-based (RAG comes later).
 """
 import json
-from pathlib import Path
 
-from sentence_transformers import SentenceTransformer
-
+from . import store
 from .trust import trust_score
 
-DATA = Path(__file__).parent / "data" / "resources.json"
-ALPHA = 0.6  # weight on relevance vs trust
-EMBED_MODEL = "all-MiniLM-L6-v2"
-MIN_RELEVANCE = 0.25  # untuned guess: embedding similarity is rarely exactly 0
+ALPHA = 0.6
+MIN_RELEVANCE = 0.25  # untuned guess
 
 
 class Recommender:
-    def __init__(self, path: Path = DATA, alpha: float = ALPHA):
+    def __init__(self, alpha: float = ALPHA, collection=None, seed_path=store.DATA):
         self.alpha = alpha
-        self.resources = json.loads(Path(path).read_text())
-        for r in self.resources:
+        self.col = collection if collection is not None else store.get_collection()
+        if self.col.count() == 0:
+            store.load_seed(self.col, seed_path)
+        got = self.col.get(include=["metadatas"])
+        self.resources = []
+        for m in got["metadatas"]:
+            r = {
+                "id": m["rid"], "title": m["title"], "type": m["type"],
+                "provider": m["provider"], "reviews": json.loads(m["reviews_json"]),
+            }
             r["trust"] = trust_score(r["reviews"])
-        docs = [f'{r["title"]} {r["topic"]} {r["description"]}' for r in self.resources]
-        self.model = SentenceTransformer(EMBED_MODEL)
-        self.embeddings = self.model.encode(docs, normalize_embeddings=True)
+            self.resources.append(r)
+        self.by_id = {r["id"]: r for r in self.resources}
 
     def explain(self, r: dict, relevance: float) -> str:
         t = r["trust"]
@@ -47,14 +44,21 @@ class Recommender:
     def search(self, query: str, k: int = 5, kind: str | None = None) -> list:
         if not query.strip():
             return []
-        q = self.model.encode([query], normalize_embeddings=True)
-        sims = (self.embeddings @ q.T).ravel()  # unit vectors, so dot product = cosine
+        n = self.col.count()
+        if n == 0:
+            return []
+        res = self.col.query(
+            query_texts=[query],
+            n_results=n,
+            where={"type": kind} if kind else None,
+            include=["metadatas", "distances"],
+        )
         out = []
-        for r, rel in zip(self.resources, sims):
+        for m, dist in zip(res["metadatas"][0], res["distances"][0]):
+            rel = 1.0 - dist
             if rel <= MIN_RELEVANCE:
                 continue
-            if kind and r["type"] != kind:
-                continue
+            r = self.by_id[m["rid"]]
             final = self.alpha * rel + (1 - self.alpha) * r["trust"]["score"]
             out.append({
                 "id": r["id"], "title": r["title"], "type": r["type"],
