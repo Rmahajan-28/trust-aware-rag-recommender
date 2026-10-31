@@ -1,5 +1,5 @@
 fastapi
 uvicorn
-scikit-learn
+sentence-transformers
 pytest
 httpx

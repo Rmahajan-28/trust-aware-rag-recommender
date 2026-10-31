@@ -1,6 +1,8 @@
 """Retrieval + trust-aware re-ranking.
 
-Stage 1 (retrieve): TF-IDF cosine similarity between the query and each resource.
+Stage 1 (retrieve): cosine similarity between the query embedding and each
+    resource embedding (sentence-transformers), so matching is by meaning,
+    not just shared words.
 Stage 2 (re-rank):  final = ALPHA * relevance + (1 - ALPHA) * trust.
 
 Explanations are currently template-based and grounded in the retrieved data
@@ -10,13 +12,14 @@ RAG explanations in a later phase.
 import json
 from pathlib import Path
 
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
 
 from .trust import trust_score
 
 DATA = Path(__file__).parent / "data" / "resources.json"
 ALPHA = 0.6  # weight on relevance vs trust
+EMBED_MODEL = "all-MiniLM-L6-v2"
+MIN_RELEVANCE = 0.25  # untuned guess: embedding similarity is rarely exactly 0
 
 
 class Recommender:
@@ -26,8 +29,8 @@ class Recommender:
         for r in self.resources:
             r["trust"] = trust_score(r["reviews"])
         docs = [f'{r["title"]} {r["topic"]} {r["description"]}' for r in self.resources]
-        self.vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
-        self.matrix = self.vectorizer.fit_transform(docs)
+        self.model = SentenceTransformer(EMBED_MODEL)
+        self.embeddings = self.model.encode(docs, normalize_embeddings=True)
 
     def explain(self, r: dict, relevance: float) -> str:
         t = r["trust"]
@@ -44,11 +47,11 @@ class Recommender:
     def search(self, query: str, k: int = 5, kind: str | None = None) -> list:
         if not query.strip():
             return []
-        q = self.vectorizer.transform([query])
-        sims = cosine_similarity(q, self.matrix).ravel()
+        q = self.model.encode([query], normalize_embeddings=True)
+        sims = (self.embeddings @ q.T).ravel()  # unit vectors, so dot product = cosine
         out = []
         for r, rel in zip(self.resources, sims):
-            if rel <= 0:
+            if rel <= MIN_RELEVANCE:
                 continue
             if kind and r["type"] != kind:
                 continue
