@@ -1,5 +1,8 @@
+import json
+
 from fastapi.testclient import TestClient
 
+from backend import store
 from backend.main import app
 
 client = TestClient(app)
@@ -8,7 +11,7 @@ client = TestClient(app)
 def test_health():
     r = client.get("/api/health")
     assert r.status_code == 200
-    assert r.json()["resources"] == 12
+    assert r.json()["resources"] == len(json.loads(store.DATA.read_text()))
 
 
 def test_search_returns_relevant_top_result():
@@ -35,3 +38,9 @@ def test_missing_query_rejected():
 def test_frontend_served():
     r = client.get("/")
     assert r.status_code == 200 and "TrustRec" in r.text
+
+
+def test_results_include_evidence():
+    r = client.get("/api/search", params={"q": "machine learning", "k": 3})
+    for x in r.json()["results"]:
+        assert 1 <= len(x["evidence"]) <= 3

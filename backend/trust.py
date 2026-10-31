@@ -14,7 +14,11 @@ import math
 import re
 
 WEIGHTS = {"rating": 0.35, "verified": 0.25, "helpful": 0.20, "volume": 0.20}
-PROMO_WORDS = ("buy now", "subscribe", "guaranteed", "scam", "click", "free money")
+# "scam" is deliberately not here: honest negative reviews use it ("felt like a scam"),
+# and flagging them would suppress genuine dissent.
+PROMO_WORDS = ("buy now", "subscribe", "guaranteed", "click", "free money")
+
+SPAM_THRESHOLD = 0.5  # review_spam_score >= this counts as suspicious
 
 
 def review_spam_score(review: dict) -> float:
@@ -53,7 +57,7 @@ def trust_score(reviews: list) -> dict:
 
     comps = {"rating": rating, "verified": verified, "helpful": helpful, "volume": volume}
     score = sum(WEIGHTS[k] * v for k, v in comps.items())
-    flagged = sum(1 for r in reviews if review_spam_score(r) >= 0.5)
+    flagged = sum(1 for r in reviews if review_spam_score(r) >= SPAM_THRESHOLD)
     return {
         "score": round(score, 3),
         "components": {k: round(v, 3) for k, v in comps.items()},

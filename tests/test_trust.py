@@ -16,6 +16,12 @@ def test_clean_review_not_flagged():
     assert review_spam_score(good()) < 0.3
 
 
+def test_honest_negative_review_with_scam_word_not_flagged():
+    honest = {"rating": 1, "text": "Felt like a scam, the code in the description does not work.",
+              "verified": True, "helpful_votes": 12}
+    assert review_spam_score(honest) < 0.3
+
+
 def test_empty_reviews_score_zero():
     assert trust_score([])["score"] == 0.0
 

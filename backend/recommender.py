@@ -1,23 +1,37 @@
 """Retrieval + trust-aware re-ranking using the ChromaDB vector store.
 
 relevance = 1 - cosine distance; final = ALPHA * relevance + (1 - ALPHA) * trust.
-Explanations are still template-based (RAG comes later).
+
+Each result also carries `evidence`: the reviews of that resource most relevant to the
+query, retrieved from the per-review collection with suspicious (spam-flagged) reviews
+excluded. This is the retrieval half of RAG; the explanation is still template-based
+and the LLM step will be written on top of `evidence`.
 """
 import json
 
 from . import store
-from .trust import trust_score
+from .trust import SPAM_THRESHOLD, trust_score
 
 ALPHA = 0.6
 MIN_RELEVANCE = 0.25  # untuned guess
+EVIDENCE_K = 3
 
 
 class Recommender:
-    def __init__(self, alpha: float = ALPHA, collection=None, seed_path=store.DATA):
+    def __init__(self, alpha: float = ALPHA, collection=None, seed_path=store.DATA,
+                 reviews_collection=None):
         self.alpha = alpha
         self.col = collection if collection is not None else store.get_collection()
-        if self.col.count() == 0:
-            store.load_seed(self.col, seed_path)
+        if reviews_collection is not None:
+            self.rcol = reviews_collection
+        elif collection is None:
+            self.rcol = store.get_reviews_collection()
+        else:
+            self.rcol = None  # custom resource collection without reviews -> no evidence
+        # idempotent: only adds items missing from an existing (older) store
+        store.load_seed(self.col, seed_path)
+        if self.rcol is not None:
+            store.load_reviews(self.rcol, seed_path)
         got = self.col.get(include=["metadatas"])
         self.resources = []
         for m in got["metadatas"]:
@@ -40,6 +54,32 @@ class Recommender:
         if t["n_flagged"]:
             parts.append(f'{t["n_flagged"]} suspicious review(s) were down-weighted.')
         return " ".join(parts)
+
+    def evidence(self, query: str, rid: int, n: int = EVIDENCE_K) -> list:
+        """Top-n reviews of resource `rid` most relevant to `query`, spam excluded."""
+        if self.rcol is None or not query.strip():
+            return []
+        total = len(self.by_id[rid]["reviews"])
+        if total == 0:
+            return []
+        res = self.rcol.query(
+            query_texts=[query],
+            n_results=total,
+            where={"rid": rid},
+            include=["documents", "metadatas", "distances"],
+        )
+        out = []
+        for doc, m, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
+            if m["spam"] >= SPAM_THRESHOLD:
+                continue
+            out.append({
+                "text": doc, "rating": m["rating"], "verified": m["verified"],
+                "helpful_votes": m["helpful_votes"],
+                "relevance": round(float(1.0 - dist), 3),
+            })
+            if len(out) == n:
+                break
+        return out
 
     def search(self, query: str, k: int = 5, kind: str | None = None) -> list:
         if not query.strip():
@@ -67,4 +107,8 @@ class Recommender:
                 "explanation": self.explain(r, float(rel)),
             })
         out.sort(key=lambda x: x["score"], reverse=True)
-        return out[:k]
+        out = out[:k]
+        # evidence only for the results actually returned (one small query each)
+        for item in out:
+            item["evidence"] = self.evidence(query, item["id"])
+        return out
