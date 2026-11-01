@@ -35,7 +35,21 @@ function card(r) {
   row.appendChild(el("span", "trust-val", r.trust.score.toFixed(2)));
   c.appendChild(row);
 
-  c.appendChild(el("p", "why", r.explanation));
+  const why = el("p", "why", r.explanation + " ");
+  why.appendChild(el("span", "src", r.explanation_source === "llm" ? "AI-written from reviews" : "template"));
+  c.appendChild(why);
+
+  if (r.evidence && r.evidence.length) {
+    const det = el("details", "evidence");
+    det.appendChild(el("summary", null, `Evidence: ${r.evidence.length} reviews`));
+    const ol = el("ol");
+    r.evidence.forEach((ev) => {
+      const tag = ev.verified ? "verified" : "unverified";
+      ol.appendChild(el("li", null, `“${ev.text}” (${ev.rating}/5, ${tag}, ${ev.helpful_votes} helpful)`));
+    });
+    det.appendChild(ol);
+    c.appendChild(det);
+  }
   if (r.trust.n_flagged) {
     c.appendChild(el("p", "flag", `⚠ ${r.trust.n_flagged} of ${r.trust.n_reviews} reviews flagged as suspicious`));
   }

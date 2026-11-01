@@ -4,12 +4,12 @@ relevance = 1 - cosine distance; final = ALPHA * relevance + (1 - ALPHA) * trust
 
 Each result also carries `evidence`: the reviews of that resource most relevant to the
 query, retrieved from the per-review collection with suspicious (spam-flagged) reviews
-excluded. This is the retrieval half of RAG; the explanation is still template-based
-and the LLM step will be written on top of `evidence`.
+excluded. This is the retrieval half of RAG. The generation half lives in `explainer.py`,
+which writes each result's explanation from that evidence (LLM, with a template fallback).
 """
 import json
 
-from . import store
+from . import explainer, store
 from .trust import SPAM_THRESHOLD, trust_score
 
 ALPHA = 0.6
@@ -19,8 +19,10 @@ EVIDENCE_K = 3
 
 class Recommender:
     def __init__(self, alpha: float = ALPHA, collection=None, seed_path=store.DATA,
-                 reviews_collection=None):
+                 reviews_collection=None, explain_fn=None):
         self.alpha = alpha
+        # (query, results) -> {id: {"text", "source"}}; swap in a fake for offline tests
+        self.explain_fn = explain_fn or explainer.explain_batch
         self.col = collection if collection is not None else store.get_collection()
         if reviews_collection is not None:
             self.rcol = reviews_collection
@@ -42,18 +44,6 @@ class Recommender:
             r["trust"] = trust_score(r["reviews"])
             self.resources.append(r)
         self.by_id = {r["id"]: r for r in self.resources}
-
-    def explain(self, r: dict, relevance: float) -> str:
-        t = r["trust"]
-        c = t["components"]
-        parts = [f'Matches your query (relevance {relevance:.2f}).']
-        parts.append(
-            f'Trust {t["score"]:.2f}: {c["verified"]*100:.0f}% verified-review weight, '
-            f'rating component {c["rating"]:.2f}, from {t["n_reviews"]} reviews.'
-        )
-        if t["n_flagged"]:
-            parts.append(f'{t["n_flagged"]} suspicious review(s) were down-weighted.')
-        return " ".join(parts)
 
     def evidence(self, query: str, rid: int, n: int = EVIDENCE_K) -> list:
         """Top-n reviews of resource `rid` most relevant to `query`, spam excluded."""
@@ -104,11 +94,16 @@ class Recommender:
                 "id": r["id"], "title": r["title"], "type": r["type"],
                 "provider": r["provider"], "relevance": round(float(rel), 3),
                 "trust": r["trust"], "score": round(float(final), 3),
-                "explanation": self.explain(r, float(rel)),
             })
         out.sort(key=lambda x: x["score"], reverse=True)
         out = out[:k]
         # evidence only for the results actually returned (one small query each)
         for item in out:
             item["evidence"] = self.evidence(query, item["id"])
+        # one batched generation step over all returned results
+        explained = self.explain_fn(query, out)
+        for item in out:
+            e = explained[item["id"]]
+            item["explanation"] = e["text"]
+            item["explanation_source"] = e["source"]  # "llm" or "template"
         return out

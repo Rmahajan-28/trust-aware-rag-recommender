@@ -44,6 +44,16 @@ class HashEmbedding(EmbeddingFunction):
         return HashEmbedding()
 
 
+@pytest.fixture(autouse=True)
+def no_real_llm(monkeypatch):
+    """Tests never call Groq, even if a key is set in the environment or a .env file."""
+    from backend import explainer
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(explainer, "ENV_FILE", explainer.ENV_FILE.with_name(".env.does-not-exist"))
+    explainer._cache.clear()
+
+
 @pytest.fixture
 def rec():
     from backend.recommender import Recommender
