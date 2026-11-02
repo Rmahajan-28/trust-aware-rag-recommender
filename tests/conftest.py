@@ -50,6 +50,7 @@ def no_real_llm(monkeypatch):
     from backend import explainer
 
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
     monkeypatch.setattr(explainer, "ENV_FILE", explainer.ENV_FILE.with_name(".env.does-not-exist"))
     explainer._cache.clear()
 

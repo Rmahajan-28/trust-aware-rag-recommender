@@ -9,9 +9,9 @@ not exist, cites nothing, returns bad JSON, or the API is unavailable (no key, r
 limit, network), that item falls back to the deterministic template. So the app always
 shows something, and `explanation_source` says which kind it is.
 
-Config (environment variables, or a `.env` file in the repo root):
+Config (environment variables, or a `.env` file in the repo root; env vars win):
   GROQ_API_KEY   required for LLM explanations; without it everything uses the template
-  GROQ_MODEL     default "llama-3.1-8b-instant" (largest free-tier daily quota)
+  GROQ_MODEL     default "openai/gpt-oss-20b" (Groq retired llama-3.1-8b-instant on 2026-08-16)
 """
 import json
 import os
@@ -21,7 +21,8 @@ from pathlib import Path
 import httpx
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_MODEL = "openai/gpt-oss-20b"
+MAX_OUTPUT_TOKENS = 2000  # reasoning models spend part of this "thinking" before the JSON
 TIMEOUT_S = 20.0
 MAX_EXPLANATION_CHARS = 420
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
@@ -41,16 +42,25 @@ Reply with a single JSON object mapping each resource id (as a string) to its ex
 _cache: dict = {}
 
 
-def _api_key() -> str | None:
-    key = os.environ.get("GROQ_API_KEY")
-    if key:
-        return key.strip()
+def _setting(name: str) -> str | None:
+    """Read a setting from the environment, else from the `.env` file; None if unset."""
+    val = os.environ.get(name)
+    if val and val.strip():
+        return val.strip()
     if ENV_FILE.exists():
         for line in ENV_FILE.read_text().splitlines():
-            name, _, val = line.partition("=")
-            if name.strip() == "GROQ_API_KEY" and val.strip():
-                return val.strip().strip('"').strip("'")
+            key, _, rest = line.partition("=")
+            if key.strip() == name and rest.strip():
+                return rest.strip().strip('"').strip("'")
     return None
+
+
+def _api_key() -> str | None:
+    return _setting("GROQ_API_KEY")
+
+
+def _model() -> str:
+    return _setting("GROQ_MODEL") or DEFAULT_MODEL
 
 
 def groq_complete(messages: list) -> str | None:
@@ -58,17 +68,21 @@ def groq_complete(messages: list) -> str | None:
     key = _api_key()
     if not key:
         return None
+    model = _model()
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_completion_tokens": MAX_OUTPUT_TOKENS,
+        "response_format": {"type": "json_object"},
+    }
+    if model.startswith("openai/gpt-oss"):
+        payload["reasoning_effort"] = "low"  # short task: keep the thinking (and latency) small
     try:
         resp = httpx.post(
             API_URL,
             headers={"Authorization": f"Bearer {key}"},
-            json={
-                "model": os.environ.get("GROQ_MODEL", DEFAULT_MODEL),
-                "messages": messages,
-                "temperature": 0.2,
-                "max_tokens": 700,
-                "response_format": {"type": "json_object"},
-            },
+            json=payload,
             timeout=TIMEOUT_S,
         )
         if resp.status_code != 200:  # 429 rate limit, 401 bad key, 5xx ...

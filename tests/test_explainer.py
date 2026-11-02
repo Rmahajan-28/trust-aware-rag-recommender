@@ -111,3 +111,63 @@ def test_search_without_key_still_returns_template_explanations(rec):
     results = rec.search("machine learning", k=3)
     assert results
     assert all(r["explanation_source"] == "template" and r["explanation"] for r in results)
+
+
+class _OkResponse:
+    status_code = 200
+
+    def json(self):
+        return {"choices": [{"message": {"content": "{}"}}]}
+
+
+def _capture_post(monkeypatch):
+    """Replace the HTTP call so we can see exactly what would be sent to Groq."""
+    sent = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent["headers"], sent["payload"] = headers, json
+        return _OkResponse()
+
+    monkeypatch.setattr(explainer.httpx, "post", fake_post)
+    return sent
+
+
+def test_key_and_model_are_both_read_from_dotenv(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text('GROQ_API_KEY="gsk_test"\nGROQ_MODEL=some/other-model\n')
+    monkeypatch.setattr(explainer, "ENV_FILE", env)
+    sent = _capture_post(monkeypatch)
+    explainer.groq_complete([{"role": "user", "content": "hi"}])
+    assert sent["headers"]["Authorization"] == "Bearer gsk_test"
+    assert sent["payload"]["model"] == "some/other-model"
+
+
+def test_environment_variable_beats_dotenv(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("GROQ_API_KEY=from_file\nGROQ_MODEL=file-model\n")
+    monkeypatch.setattr(explainer, "ENV_FILE", env)
+    monkeypatch.setenv("GROQ_API_KEY", "from_env")
+    monkeypatch.setenv("GROQ_MODEL", "env-model")
+    sent = _capture_post(monkeypatch)
+    explainer.groq_complete([{"role": "user", "content": "hi"}])
+    assert sent["headers"]["Authorization"] == "Bearer from_env"
+    assert sent["payload"]["model"] == "env-model"
+
+
+def test_default_model_and_request_shape(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    sent = _capture_post(monkeypatch)
+    explainer.groq_complete([{"role": "user", "content": "hi"}])
+    p = sent["payload"]
+    assert p["model"] == explainer.DEFAULT_MODEL == "openai/gpt-oss-20b"
+    assert p["response_format"] == {"type": "json_object"}
+    assert p["max_completion_tokens"] == explainer.MAX_OUTPUT_TOKENS
+    assert p["reasoning_effort"] == "low"  # only sent for gpt-oss models
+
+
+def test_reasoning_effort_not_sent_to_other_models(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.setenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+    sent = _capture_post(monkeypatch)
+    explainer.groq_complete([{"role": "user", "content": "hi"}])
+    assert "reasoning_effort" not in sent["payload"]
